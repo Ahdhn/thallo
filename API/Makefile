@@ -1,7 +1,7 @@
 .PHONY:	all clean purge release
 
-TERRAHOME ?= ../../terra/
-TERRA ?= ../../terra/bin/terra
+TERRAHOME = $(HOME)/terra
+TERRA = $(TERRAHOME)/bin/terra
 
 all: release/lib/libThallo.a release/lib/libThalloDev.a
 

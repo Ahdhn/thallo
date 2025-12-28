@@ -7,8 +7,8 @@ LINK = clang++
 NVCC = /usr/local/cuda/bin/nvcc
 SRC ?= src
 CUDAHOME += /usr/local/cuda
-TERRAHOME ?= ../../../terra
-TERRA ?= ../../../terra/bin/terra
+TERRAHOME = $(HOME)/terra
+TERRA = $(TERRAHOME)/bin/terra
 
 ifdef USES_CERES
   ifeq ($(CERES_ENABLED),1)
@@ -19,7 +19,7 @@ ifdef USES_CERES
 endif
 
 FLAGS += -O3 -g -I$(SRC) -I$(SRC)/cutil/inc -I../../API/release/include -I$(TERRAHOME)/include -I../external/mLib/include -I../external -I../external/OpenMesh/include -I../external/FreeImage/include -I../shared -I/usr/include/eigen3 -I../shared/tclap/include
-NVCCFLAGS += -arch sm_30 -std=c++11 $(FLAGS)
+NVCCFLAGS += -arch sm_89 -std=c++11 $(FLAGS)
 LFLAGS += -std=c++11 -L../../API/release/lib -L$(TERRAHOME)/lib -lterra -ldl
 UNAME := $(shell uname)
 
