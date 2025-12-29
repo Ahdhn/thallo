@@ -4,9 +4,9 @@ CERES_ENABLED=1
 
 CXX = clang++
 LINK = clang++
-NVCC = /usr/local/cuda/bin/nvcc
+NVCC = /usr/local/cuda-12.6/bin/nvcc
 SRC ?= src
-CUDAHOME += /usr/local/cuda
+CUDAHOME = /usr/local/cuda-12.6
 TERRAHOME = $(HOME)/terra
 TERRA = $(TERRAHOME)/bin/terra
 
