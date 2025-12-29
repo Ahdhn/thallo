@@ -2,6 +2,9 @@ local cu = {}
 
 local ffi = require("ffi")
 
+local cudapath = os.getenv("CUDAHOME") or os.getenv("CUDA_HOME") or "/usr/local/cuda"
+terralib.includepath = terralib.includepath .. ";" .. cudapath .. "/include/"
+
 local C = terralib.includecstring [[
 #include <stdio.h>
 #include <string.h>
@@ -22,6 +25,25 @@ cudaOccError cudaOccupancyCalculator(
     int                          blockSize,        // in
     size_t                       dynamicSmemSize){ // in
     return cudaOccMaxActiveBlocksPerMultiprocessor(result, properties, attributes, state, blockSize, dynamicSmemSize);
+}
+
+// CUDA 12.x compatibility wrappers
+// These functions wrap the inline/template functions that Terra cannot import directly
+
+cudaError_t thallo_cudaGetDeviceProperties(struct cudaDeviceProp *prop, int device) {
+    return cudaGetDeviceProperties(prop, device);
+}
+
+cudaError_t thallo_cudaGetDevice(int *device) {
+    return cudaGetDevice(device);
+}
+
+cudaError_t thallo_cudaDriverGetVersion(int *driverVersion) {
+    return cudaDriverGetVersion(driverVersion);
+}
+
+cudaError_t thallo_cudaRuntimeGetVersion(int *runtimeVersion) {
+    return cudaRuntimeGetVersion(runtimeVersion);
 }
 
 ]]
@@ -59,7 +81,7 @@ local function generateCallMacro(cu_library, success_name, get_error_string_name
 end
 
 function cu.loadCUDALibrary(libname,headername,successcode, get_error_string_name)
-    local cudapath = "/usr/local/cuda"
+    local cudapath = os.getenv("CUDAHOME") or os.getenv("CUDA_HOME") or "/usr/local/cuda"
     local cudalibpath = "/lib64/lib"..libname..".dylib"
     if ffi.os == "Linux" then
         cudalibpath = "/lib64/lib"..libname..".so"
@@ -75,7 +97,22 @@ function cu.loadCUDALibrary(libname,headername,successcode, get_error_string_nam
     return library, generateCallMacro(library, successcode,get_error_string_name)
 end
 
-local libdevice = "/nvvm/libdevice/libdevice.10.bc"
+
+local function first_existing(paths)
+  for _,p in ipairs(paths) do
+    local f = io.open(p, "r")
+    if f then f:close(); return p end
+  end
+  return nil
+end
+
+local libdevice = first_existing({
+  cudapath .. "/nvvm/libdevice/libdevice.10.bc",
+  cudapath .. "/nvvm/libdevice/libdevice.11.bc",
+  cudapath .. "/nvvm/libdevice/libdevice.12.bc",
+})
+assert(libdevice, "Could not find libdevice bitcode under " .. cudapath .. "/nvvm/libdevice/")
+
 
 local extern = terralib.externfunction
 if terralib.linkllvm then
@@ -452,9 +489,9 @@ end
 
 terra cu.terraMaximumResidentThreadsPerGrid()
     var device : int = 0
-    cd(C.cudaGetDevice(&device))
+    cd(C.thallo_cudaGetDevice(&device))
     var deviceProp : C.cudaDeviceProp
-    cd(C.cudaGetDeviceProperties(&deviceProp, device))
+    cd(C.thallo_cudaGetDeviceProperties(&deviceProp, device))
     var maxResidentThreadsPerSM = 2048
     if deviceProp.major == 2 then
         maxResidentThreadsPerSM = 1536
@@ -482,14 +519,14 @@ local terra printCudaDeviceProperties()
     var dev : int32
     var driverVersion = 0
     var runtimeVersion = 0;
-    C.cudaGetDevice(&dev)
+    C.thallo_cudaGetDevice(&dev)
     var deviceProp : C.cudaDeviceProp
-    C.cudaGetDeviceProperties(&deviceProp, dev)
+    C.thallo_cudaGetDeviceProperties(&deviceProp, dev)
 
     C.printf("\nDevice %d: \"%s\"\n", dev, deviceProp.name)
 
-    C.cudaDriverGetVersion(&driverVersion)
-    C.cudaRuntimeGetVersion(&runtimeVersion)
+    C.thallo_cudaDriverGetVersion(&driverVersion)
+    C.thallo_cudaRuntimeGetVersion(&runtimeVersion)
     C.printf("  CUDA Driver Version / Runtime Version          %d.%d / %d.%d\n", driverVersion/1000, (driverVersion%100)/10, runtimeVersion/1000, (runtimeVersion%100)/10);
     C.printf("  CUDA Capability Major/Minor version number:    %d.%d\n", deviceProp.major, deviceProp.minor)
 
@@ -573,9 +610,9 @@ terra global_memory()
     var dev : int32
     var driverVersion = 0
     var runtimeVersion = 0;
-    C.cudaGetDevice(&dev)
+    C.thallo_cudaGetDevice(&dev)
     var deviceProp : C.cudaDeviceProp
-    C.cudaGetDeviceProperties(&deviceProp, dev)
+    C.thallo_cudaGetDeviceProperties(&deviceProp, dev)
     return [uint64](deviceProp.totalGlobalMem)
 end
 
@@ -585,9 +622,9 @@ terra theoretical_memory_bandwidth() : double
     var dev : int32
     var driverVersion = 0
     var runtimeVersion = 0;
-    C.cudaGetDevice(&dev)
+    C.thallo_cudaGetDevice(&dev)
     var deviceProp : C.cudaDeviceProp
-    C.cudaGetDeviceProperties(&deviceProp, dev)
+    C.thallo_cudaGetDeviceProperties(&deviceProp, dev)
     var mem_Hz = deviceProp.memoryClockRate * 1e3f
     var busWidthBytes = deviceProp.memoryBusWidth / 8.0
     return mem_Hz*busWidthBytes*2.0
@@ -597,9 +634,9 @@ terra theoretical_peak_flops() : double
     var dev : int32
     var driverVersion = 0
     var runtimeVersion = 0;
-    C.cudaGetDevice(&dev)
+    C.thallo_cudaGetDevice(&dev)
     var deviceProp : C.cudaDeviceProp
-    C.cudaGetDeviceProperties(&deviceProp, dev)
+    C.thallo_cudaGetDeviceProperties(&deviceProp, dev)
     var compute_Hz = deviceProp.clockRate * 1e3f
     var core_count = cores_per_SM(deviceProp.major, deviceProp.minor)*deviceProp.multiProcessorCount
     return compute_Hz*core_count*2.0 -- for FMA
@@ -609,9 +646,9 @@ terra core_count() : uint64
     var dev : int32
     var driverVersion = 0
     var runtimeVersion = 0;
-    C.cudaGetDevice(&dev)
+    C.thallo_cudaGetDevice(&dev)
     var deviceProp : C.cudaDeviceProp
-    C.cudaGetDeviceProperties(&deviceProp, dev)
+    C.thallo_cudaGetDeviceProperties(&deviceProp, dev)
     return cores_per_SM(deviceProp.major, deviceProp.minor)*deviceProp.multiProcessorCount
 end
 
@@ -637,9 +674,9 @@ terra cu.get_max_active_threads(register_count : int32)
     var dev : int32
     var driverVersion = 0
     var runtimeVersion = 0;
-    C.cudaGetDevice(&dev)
+    C.thallo_cudaGetDevice(&dev)
     var deviceProp : C.cudaDeviceProp
-    C.cudaGetDeviceProperties(&deviceProp, dev)
+    C.thallo_cudaGetDeviceProperties(&deviceProp, dev)
 
     var result : C.cudaOccResult
     var prop : C.cudaOccDeviceProp
