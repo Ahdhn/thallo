@@ -46,6 +46,35 @@ cudaError_t thallo_cudaRuntimeGetVersion(int *runtimeVersion) {
     return cudaRuntimeGetVersion(runtimeVersion);
 }
 
+int thallo_computeMaxActiveBlocks(int device, int blockSize, int numRegs, size_t dynamicSmem) {
+    struct cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, device);
+    
+    // Calculate based on register limits
+    int regsPerSM = prop.regsPerMultiprocessor;
+    int regsPerBlock = numRegs * blockSize;
+    int blocksPerSMByRegs = (regsPerBlock > 0) ? (regsPerSM / regsPerBlock) : prop.maxBlocksPerMultiProcessor;
+    
+    // Calculate based on shared memory limits
+    size_t sharedMemPerSM = prop.sharedMemPerMultiprocessor;
+    size_t sharedMemPerBlock = dynamicSmem + 0; // Add static shared mem if known
+    int blocksPerSMByShared = (sharedMemPerBlock > 0) ? (int)(sharedMemPerSM / sharedMemPerBlock) : prop.maxBlocksPerMultiProcessor;
+    
+    // Calculate based on thread limits
+    int threadsPerSM = prop.maxThreadsPerMultiProcessor;
+    int blocksPerSMByThreads = threadsPerSM / blockSize;
+    
+    // Calculate based on block limits
+    int maxBlocksPerSM = prop.maxBlocksPerMultiProcessor;
+    
+    // Take minimum of all constraints
+    int blocksPerSM = blocksPerSMByRegs;
+    if (blocksPerSMByShared < blocksPerSM) blocksPerSM = blocksPerSMByShared;
+    if (blocksPerSMByThreads < blocksPerSM) blocksPerSM = blocksPerSMByThreads;
+    if (maxBlocksPerSM < blocksPerSM) blocksPerSM = maxBlocksPerSM;
+    
+    return blocksPerSM * prop.multiProcessorCount;
+}
 ]]
 
 cu.C = C
@@ -240,22 +269,13 @@ __device__ unsigned int __ballot(int a)
 --]]
 terra cu.ballot(pred : int) : uint
     var ret : uint32
-    ret = terralib.asm(uint32,"{\n\t.reg .pred %ballot_p; \n\tsetp.ne.u32 %ballot_p, $1, 0; \n\tvote.ballot.b32 $0, %ballot_p; \n\t}","=r,r",true,pred);
+    ret = terralib.asm(uint32, "{\n\t.reg .pred %ballot_p; \n\tsetp.ne.u32 %ballot_p, $1, 0; \n\tvote.sync.ballot.b32 $0, %ballot_p, 0xffffffff; \n\t}", "=r,r", true, pred)
     return ret
 end
 
 terra cu.any(pred : int) : bool
-    -- TODO: implement using intrinsics...
-    --printf("any(%d)\n",[int](pred))
     var b = cu.ballot(pred)
-    --printf("any(%u),%d\n",b,[int](pred))
     return b ~= 0
-    --[[
-    var iPred = [int](pred)
-    var ret : uint32
-    ret = terralib.asm(uint32,"{\n\t.reg .pred %any_p; \n\tsetp.ne.u32 %any_p, $1, 0; \n\tvote.any.b32 $0, %any_p; \n\t}","=r,r",true,iPred);
-    return [bool](ret)
-    --]]
 end
 
 
@@ -303,8 +323,8 @@ function cu.shfl(typ)
             var init : uint2Double;
             init.d = v
             var c : int =  0x1F
-            ret.u2.x = terralib.asm(uint32,"shfl.idx.b32 $0, $1, $2, $3;",["="..ch..","..ch..",r,r"], true, init.u2.x, source_lane, c)
-            ret.u2.y = terralib.asm(uint32,"shfl.idx.b32 $0, $1, $2, $3;",["="..ch..","..ch..",r,r"], true, init.u2.y, source_lane, c)
+            ret.u2.x = terralib.asm(uint32, "shfl.sync.idx.b32 $0, $1, $2, $3, 0xffffffff;", ["="..ch..","..ch..",r,r"], true, init.u2.x, source_lane, c)
+            ret.u2.y = terralib.asm(uint32, "shfl.sync.idx.b32 $0, $1, $2, $3, 0xffffffff;", ["="..ch..","..ch..",r,r"], true, init.u2.y, source_lane, c)
             return ret.d
         end
     else
@@ -314,7 +334,7 @@ function cu.shfl(typ)
         return terra (v : typ, source_lane : uint)
             var ret : typ
             var c : int =  0x1F
-            ret = terralib.asm(typ,"shfl.idx.b32 $0, $1, $2, $3;",["="..ch..","..ch..",r,r"], true, v, source_lane, c)
+            ret = terralib.asm(typ, "shfl.sync.idx.b32 $0, $1, $2, $3, 0xffffffff;", ["="..ch..","..ch..",r,r"], true, v, source_lane, c)
             return ret
         end
     end
@@ -329,7 +349,7 @@ terra cu.__shfl_downf(v : float, delta : uint, width : int)
     var ret : float;
     var c : int;
     c = ((warpSize-width) << 8) or 0x1F;
-    ret = terralib.asm(float,"shfl.down.b32 $0, $1, $2, $3;","=f,f,r,r", true, v, delta, c)
+    ret = terralib.asm(float, "shfl.sync.down.b32 $0, $1, $2, $3, 0xffffffff;", "=f,f,r,r", true, v, delta, c)
     return ret;
 end
 
@@ -339,8 +359,8 @@ terra cu.__shfl_downd(v : double, delta : uint, width : int)
     init.d = v
     var c : int;
     c = ((warpSize-width) << 8) or 0x1F;
-    ret.u2.x = terralib.asm(uint32,"shfl.down.b32 $0, $1, $2, $3;","=f,f,r,r", true, init.u2.x, delta, c)
-    ret.u2.y = terralib.asm(uint32,"shfl.down.b32 $0, $1, $2, $3;","=f,f,r,r", true, init.u2.y, delta, c)
+    ret.u2.x = terralib.asm(uint32, "shfl.sync.down.b32 $0, $1, $2, $3, 0xffffffff;", "=r,r,r,r", true, init.u2.x, delta, c)
+    ret.u2.y = terralib.asm(uint32, "shfl.sync.down.b32 $0, $1, $2, $3, 0xffffffff;", "=r,r,r,r", true, init.u2.y, delta, c)
     return ret.d;
 end
 
@@ -491,12 +511,9 @@ terra cu.terraMaximumResidentThreadsPerGrid()
     var device : int = 0
     cd(C.thallo_cudaGetDevice(&device))
     var deviceProp : C.cudaDeviceProp
-    cd(C.thallo_cudaGetDeviceProperties(&deviceProp, device))
-    var maxResidentThreadsPerSM = 2048
-    if deviceProp.major == 2 then
-        maxResidentThreadsPerSM = 1536
-    end
-    return deviceProp.multiProcessorCount * maxResidentThreadsPerSM
+    cd(C.thallo_cudaGetDeviceProperties(&deviceProp, device))    
+    var maxResidentThreadsPerSM = deviceProp.maxThreadsPerMultiProcessor
+    return deviceProp.multiProcessorCount * maxResidentThreadsPerSM    
 end
 
 
@@ -595,14 +612,24 @@ terra cores_per_SM(major : int32, minor : int32)
       {0x70,  64},
       {0x72,  64},
       {0x75,  64},
+      {0x80,  64},
+      {0x86, 128},
+      {0x89, 128},
+      {0x90, 128},
       {-1, -1}};
 --]]
 
     if major == 3 then return 192 end
     if major == 5 then return 128 end
-    if major == 6 and minor > 0 then return 128 end
-    -- else
-    return 64
+    if major == 6 and minor == 0 then return 64 end
+    if major == 6 then return 128 end
+    if major == 7 and minor == 0 then return 64 end
+    if major == 7 then return 64 end
+    if major == 8 and minor == 0 then return 64 end
+    if major == 8 then return 128 end  -- SM 8.6, 8.9 (Ada Lovelace)
+    if major == 9 then return 128 end  -- SM 9.0 (Hopper)
+    -- Default for unknown architectures
+    return 128
 end
 
 
@@ -672,50 +699,15 @@ cu.transactions_per_coalesced_read = transactions_per_coalesced_read()
 
 terra cu.get_max_active_threads(register_count : int32)
     var dev : int32
-    var driverVersion = 0
-    var runtimeVersion = 0;
     C.thallo_cudaGetDevice(&dev)
-    var deviceProp : C.cudaDeviceProp
-    C.thallo_cudaGetDeviceProperties(&deviceProp, dev)
-
-    var result : C.cudaOccResult
-    var prop : C.cudaOccDeviceProp
-    prop.computeMajor                   = deviceProp.major                       -- Compute capability major version
-    prop.computeMinor                   = deviceProp.minor                       -- Compute capability minor
-    prop.maxThreadsPerBlock             = deviceProp.maxThreadsPerBlock          -- Maximum number of threads per block
-    prop.maxThreadsPerMultiprocessor    = deviceProp.maxThreadsPerMultiProcessor -- Maximum number of threads per SM  i.e. (Max. number of warps) x (warp size)
-    prop.regsPerBlock                   = deviceProp.regsPerBlock                -- Maximum number of registers per block
-    prop.regsPerMultiprocessor          = deviceProp.regsPerMultiprocessor       -- Maximum number of registers per SM
-    prop.warpSize                       = deviceProp.warpSize                    -- Warp size
-    prop.sharedMemPerBlock              = deviceProp.sharedMemPerBlock           -- Maximum shared memory size per block
-    prop.sharedMemPerMultiprocessor     = deviceProp.sharedMemPerMultiprocessor  -- Maximum shared memory size per SM
-    prop.numSms                         = deviceProp.multiProcessorCount         -- Number of SMs available
-    
-    var attributes : C.cudaOccFuncAttributes
-    C.memset(&attributes, 0, sizeof(C.cudaOccFuncAttributes))
-    attributes.maxThreadsPerBlock =  prop.maxThreadsPerBlock
-    attributes.numRegs = register_count          
-    attributes.sharedSizeBytes = 0 -- Number of static shared memory used
-    attributes.partitionedGCConfig = C.PARTITIONED_GC_OFF 
-
-    var state : C.cudaOccDeviceState
-    C.memset(&state, 0, sizeof(C.cudaOccDeviceState))
     
     var blockSize : int32 = _thallo_threads_per_block
     var dynamicSmemSize : C.size_t = 0
-    var err_code = C.cudaOccupancyCalculator(&result, &prop, &attributes, &state,          
-                            blockSize, dynamicSmemSize);
-    if err_code ~= C.CUDA_OCC_SUCCESS then
-        if err_code == C.CUDA_OCC_ERROR_INVALID_INPUT then
-            C.printf("cudaOccMaxActiveBlocksPerMultiprocessor: INVALID_INPUT")
-        elseif err_code == C.CUDA_OCC_ERROR_UNKNOWN_DEVICE then
-            C.printf("cudaOccMaxActiveBlocksPerMultiprocessor: UNKNOWN_DEVICE")
-        else 
-            C.printf("cudaOccMaxActiveBlocksPerMultiprocessor: UNKNOWN ERROR")
-        end
-        C.exit(err_code)
-    end
-    return deviceProp.multiProcessorCount * result.activeBlocksPerMultiprocessor * _thallo_threads_per_block 
+    
+    -- Use our simplified wrapper that computes max active blocks directly
+    var maxActiveBlocks = C.thallo_computeMaxActiveBlocks(dev, blockSize, register_count, dynamicSmemSize)
+    
+    return maxActiveBlocks * blockSize
 end
 
 
