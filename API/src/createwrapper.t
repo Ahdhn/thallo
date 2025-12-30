@@ -133,7 +133,7 @@ local terra NewState(params : Thallo_InitializationParameters) : &LibraryState
     S.L = L
     if L == nil then return doerror(L) end
     C.luaL_openlibs(L)
-    var o  = C.terra_Options { verbose = 0, debug = 1 }
+    var o  = C.terra_Options { verbose = 0, debug = 0 }
     
     if C.terra_initwithoptions(L,&o) ~= 0 then
         doerror(L)

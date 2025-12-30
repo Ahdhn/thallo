@@ -142,7 +142,6 @@ local libdevice = first_existing({
 })
 assert(libdevice, "Could not find libdevice bitcode under " .. cudapath .. "/nvvm/libdevice/")
 
-
 local extern = terralib.externfunction
 if terralib.linkllvm then
     local obj = terralib.linkllvm(libdevice)
@@ -326,6 +325,13 @@ function cu.shfl(typ)
             ret.u2.x = terralib.asm(uint32, "shfl.sync.idx.b32 $0, $1, $2, $3, 0xffffffff;", ["="..ch..","..ch..",r,r"], true, init.u2.x, source_lane, c)
             ret.u2.y = terralib.asm(uint32, "shfl.sync.idx.b32 $0, $1, $2, $3, 0xffffffff;", ["="..ch..","..ch..",r,r"], true, init.u2.y, source_lane, c)
             return ret.d
+        end        
+    elseif typ == float then        
+        return terra (v : float, source_lane : uint)
+            var ret : float
+            var c : int = 0x1F
+            ret = terralib.asm(float, "shfl.sync.idx.b32 $0, $1, $2, $3, 0xffffffff;", "=f,f,r,r", true, v, source_lane, c)
+            return ret
         end
     else
         local ch = type_to_ptx_char[tostring(int32)]
@@ -521,8 +527,101 @@ cu.maximumResidentThreadsPerGrid = cu.terraMaximumResidentThreadsPerGrid()
 
 cu.CUDAParams = terralib.CUDAParams
 
-cu.cudacompile = terralib.cudacompile
+-- =============================================================================
+-- CUDA 12.x / Terra PTX Debug Info Compatibility Fix
+-- =============================================================================
+-- Problem: When compiling complex kernels, Terra may generate PTX with debug 
+-- info containing invalid file paths like `./[string "<string>"]`. The angle
+-- brackets cause ptxas to fail with "Parsing error near '<': syntax error".
+--
+-- Solution: Hook cudalib.toptx to intercept the PTX, sanitize invalid debug 
+-- file paths, and then let the normal loading proceed with the fixed PTX.
+-- =============================================================================
 
+-- Sanitize PTX to fix invalid debug file paths
+local function sanitize_ptx(ptx)
+    if type(ptx) ~= "string" then
+        return ptx
+    end
+    
+    local modified = false
+    
+    -- Fix 1: Remove ", debug" from .target directive if present
+    local new_ptx, count1 = ptx:gsub("(%.target%s+sm_%d+),%s*debug", "%1")
+    if count1 > 0 then
+        modified = true
+        print("[PTX Sanitizer] Removed debug flag from .target directive")
+    end
+    ptx = new_ptx
+    
+    -- Fix 2: Replace invalid file paths in .file directives
+    -- Pattern: .file N "path/with/<invalid>/chars"
+    local new_ptx2, count2 = ptx:gsub('(%.file%s+%d+%s+")([^"]*<[^>]*>[^"]*)(")', '%1internal%3')
+    if count2 > 0 then
+        modified = true
+        print("[PTX Sanitizer] Fixed " .. count2 .. " .file directives with '<>' characters")
+    end
+    ptx = new_ptx2
+    
+    -- Fix 3: Replace [string "..."] patterns in file paths
+    local new_ptx3, count3 = ptx:gsub('(%.file%s+%d+%s+")([^"]*%[string[^%]]*%][^"]*)(")', '%1internal%3')
+    if count3 > 0 then
+        modified = true  
+        print("[PTX Sanitizer] Fixed " .. count3 .. " .file directives with '[string]' patterns")
+    end
+    ptx = new_ptx3
+    
+    if modified then
+        print("[PTX Sanitizer] PTX sanitization complete")
+    end
+    
+    return ptx
+end
+
+-- Store original toptx function
+local _original_toptx = cudalib.toptx
+
+-- Override toptx to sanitize PTX before it's loaded
+cudalib.toptx = function(kernels, verbose, version)
+    -- Call original to generate PTX
+    local ptx = _original_toptx(kernels, verbose, version)
+    
+    -- Check if sanitization is needed
+    if type(ptx) == "string" then
+        local target_line = ptx:match("%.target[^\n]*")
+        local needs_fix = false
+        
+        if target_line and target_line:find("debug") then
+            needs_fix = true
+        end
+        
+        -- Also check for problematic file paths
+        if ptx:find('%.file[^\n]*<') or ptx:find('%.file[^\n]*%[string') then
+            needs_fix = true
+        end
+        
+        if needs_fix then
+            ptx = sanitize_ptx(ptx)
+        end
+        
+        -- DEBUG: Dump sanitized PTX to file for inspection
+        local debug_dump = os.getenv("THALLO_DUMP_PTX")
+        if debug_dump then
+            local f = io.open("/tmp/thallo_sanitized.ptx", "w")
+            if f then
+                f:write(ptx)
+                f:close()
+                print("[PTX Sanitizer] Dumped sanitized PTX to /tmp/thallo_sanitized.ptx")
+            end
+        end
+    end
+    
+    return ptx
+end
+
+-- Use the real CUDA compiler (not CPU emulator)
+
+cu.cudacompile = terralib.cudacompile
 
 local terra toYesNo(pred : int32)
     if pred ~= 0 then return "Yes" else return  "No" end

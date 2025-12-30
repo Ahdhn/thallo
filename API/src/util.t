@@ -803,8 +803,7 @@ function util.makeGPUFunctions(problemSpec, dimensions, PlanData, delegate, name
         return (f1_u and not f2_u)
     end
     problemSpec.functions:sort(functionOrder)
-
-
+    
     -- step 1: compile the actual cuda kernels
     local kernelFunctions = {}
     local key = fixed_key and "" or tostring(os.time())
@@ -815,7 +814,7 @@ function util.makeGPUFunctions(problemSpec, dimensions, PlanData, delegate, name
             kname = kname.."_"..tostring(suffix)
         end
         return kname
-    end
+    end    
     local function addUnknownwiseFunctionsWithIspace(ispace,fmap,postfix,i)
         local dimcount = #ispace.dims
         assert(dimcount <= 3, "cannot launch over images with more than 3 dims")
@@ -823,7 +822,7 @@ function util.makeGPUFunctions(problemSpec, dimensions, PlanData, delegate, name
         for name,func in pairs(ks) do
             kernelFunctions[getkname(name,postfix,i)] = { kernel = func , annotations = { {"maxntidx", BLOCK_DIMS[dimcount][1]}, {"maxntidy", BLOCK_DIMS[dimcount][2]}, {"maxntidz", BLOCK_DIMS[dimcount][3]}, {"minctasm",1} } }
         end
-    end
+    end    
     local ispacesWithExclude = {}
     for i,problemfunction in ipairs(problemSpec.functions) do
         local fmap = problemfunction.functionmap
@@ -845,15 +844,15 @@ function util.makeGPUFunctions(problemSpec, dimensions, PlanData, delegate, name
         else
             assert(false)
         end
-    end
+    end    
     for _,ispace in ipairs(problemSpec._UnknownType.ispaces) do
         if not ispacesWithExclude[ispace] then
             local fmap = {}
-            fmap.exclude = macro(function() return `false end)
+            fmap.exclude = macro(function() return false end)
             addUnknownwiseFunctionsWithIspace(ispace,fmap,ispace,0)
         end
     end
-
+    
     do
         local ks = delegate.FlatUnknownwiseFunctions()
         for name,func in pairs(ks) do
@@ -864,8 +863,8 @@ function util.makeGPUFunctions(problemSpec, dimensions, PlanData, delegate, name
             kernelFunctions[getkname(name,problemSpec:JTJwiseFunction())] = { kernel = func , annotations = { {"maxntidx", BLOCK_DIMS[1][1]}, {"minctasm",1} } }
         end
     end
-    
-    local kernels = cu.cudacompile(kernelFunctions, verbosePTX)
+        
+    local kernels = cu.cudacompile(kernelFunctions, verbosePTX)        
 
     -- step 2: generate wrapper functions around each named thing
     local grouplaunchers = {}

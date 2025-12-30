@@ -1390,7 +1390,7 @@ local function problemPlan(id, dimensions, pplan, exauto_index, lin_iter_hint)
         end
         local problemmetadata = assert(problems[id])
         thallo.dimensions = dimensions
-        thallo.math = problemmetadata.kind:match("GPU") and util.gpuMath or util.cpuMath
+        thallo.math = util.gpuMath
         thallo.problemkind = problemmetadata.kind
         local b = terralib.currenttimeinseconds()
         if exauto_index >= 0 then
